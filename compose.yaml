@@ -1,0 +1,59 @@
+services:
+  mongo:
+    image: mongo:8.0
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"]
+      interval: 2s
+      timeout: 4s
+      retries: 30
+  mongo-init:
+    image: mongo:8.0
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command:
+      - mongosh
+      - mongodb://mongo:27017/?directConnection=true
+      - --quiet
+      - --eval
+      - |
+        try { rs.status() } catch (e) {
+          if (e.code !== 94) throw e;
+          rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]});
+        }
+        for (let i = 0; i < 60; i++) {
+          if (db.hello().isWritablePrimary) quit(0);
+          sleep(500);
+        }
+        quit(1);
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  app:
+    build: .
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      REDIS_URL: redis://redis:6379
+      MONGO_DATABASE: livepoll
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
